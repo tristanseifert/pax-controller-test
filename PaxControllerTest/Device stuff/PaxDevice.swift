@@ -8,9 +8,9 @@
 import Foundation
 import CoreBluetooth
 import OSLog
+import Combine
 
 import CryptoSwift
-import CommonCrypto
 
 /**
  * Base class for Pax devices
@@ -20,12 +20,12 @@ class PaxDevice: NSObject, CBPeripheralDelegate {
     
     /// Peripheral representing the remote end of the BT LE connection
     private var peripheral: CBPeripheral!
+    
     /// Service handle for the Pax service
     private var paxService: CBService!
-    /// Characteristic for reading device state
     private var readCharacteristic: CBCharacteristic!
-    /// Characteristic for writing device state
     private var writeCharacteristic: CBCharacteristic!
+    private var notifyCharacteristic: CBCharacteristic!
     /// Service handle for the device info service
     private var infoService: CBService!
     
@@ -34,20 +34,25 @@ class PaxDevice: NSObject, CBPeripheralDelegate {
     
     /// Set when the device has been fully initialized and can be used
     @objc private(set) public dynamic var isUsable: Bool = false
+    /// Set when we've established the connection
+    private var isConnectionSetUp: Bool = false
     
     /// Device model
     private(set) public var type: DeviceType = .Unknown
     
     /// Serial number of the device, as read during connection establishment
-    @objc private(set) public dynamic var serial: String!
+    @Published @objc private(set) public dynamic var serial: String!
     /// Manufacturer of the device
-    @objc private(set) public dynamic var manufacturer: String!
+    @Published @objc private(set) public dynamic var manufacturer: String!
     /// Model number of the device
-    @objc private(set) public dynamic var model: String!
+    @Published @objc private(set) public dynamic var model: String!
     /// Hardware revision
-    @objc private(set) public dynamic var hwVersion: String!
+    @Published @objc private(set) public dynamic var hwVersion: String!
     /// Software revision
-    @objc private(set) public dynamic var swVersion: String!
+    @Published @objc private(set) public dynamic var swVersion: String!
+    
+    /// Supported message types/attributes
+    @Published private(set) public var supportedAttributes = Set<PaxMessageType>()
     
     // MARK: - Initialization
     /**
@@ -59,8 +64,27 @@ class PaxDevice: NSObject, CBPeripheralDelegate {
         // scan for the Pax and device info service
         self.peripheral = peripheral
         self.peripheral.delegate = self
-        
+    }
+    
+    /**
+     * Perform some cleanup on deinitialization
+     */
+    deinit {
+        self.stop()
+    }
+    
+    /**
+     * Starts the device.
+     */
+    internal func start() {
         self.peripheral.discoverServices([Self.DeviceInfoService, Self.PaxService])
+    }
+    
+    /**
+     * Stops the device.
+     */
+    internal func stop() {
+        self.peripheral.setNotifyValue(false, for: self.notifyCharacteristic)
     }
     
     // MARK: - Peripheral delegate
@@ -93,7 +117,8 @@ class PaxDevice: NSObject, CBPeripheralDelegate {
         self.paxService = paxSvc
         
         peripheral.discoverCharacteristics([Self.PaxReadCharacteristic,
-                                            Self.PaxWriteCharacteristic], for: paxSvc)
+                                            Self.PaxWriteCharacteristic,
+                                            Self.PaxNotifyCharacteristic], for: paxSvc)
     }
     
     /**
@@ -113,13 +138,20 @@ class PaxDevice: NSObject, CBPeripheralDelegate {
         if service.uuid == Self.PaxService {
             self.readCharacteristic = chars.first(where: { $0.uuid == Self.PaxReadCharacteristic })
             self.writeCharacteristic = chars.first(where: { $0.uuid == Self.PaxWriteCharacteristic })
+            self.notifyCharacteristic = chars.first(where: { $0.uuid == Self.PaxNotifyCharacteristic })
             
-            guard self.readCharacteristic != nil, self.writeCharacteristic != nil else {
+            guard self.readCharacteristic != nil, self.writeCharacteristic != nil, self.notifyCharacteristic != nil else {
                 fatalError("Failed to find a required Pax service characteristic")
             }
             
-            // TODO: establish Pax connection
-            peripheral.readValue(for: self.readCharacteristic)
+            // we want to register for notifications
+            guard self.notifyCharacteristic.properties.contains(.notify) else {
+                fatalError("Notify characteristic doesn't have notify property (what the fuck)")
+            }
+            
+            peripheral.setNotifyValue(true, for: self.notifyCharacteristic)
+            
+            self.checkConnectionReady()
         } else if service.uuid == Self.DeviceInfoService {
             // read all discovered values of the info characteristic
             service.characteristics!.forEach {
@@ -152,6 +184,7 @@ class PaxDevice: NSObject, CBPeripheralDelegate {
                         case Self.SerialNumberCharacteristic:
                             self.serial = String(bytes: data, encoding: .utf8)
                             self.deriveSharedKey()
+                            self.checkConnectionReady()
                             
                         case Self.HwRevCharacteristic:
                             self.hwVersion = String(bytes: data, encoding: .utf8)
@@ -166,8 +199,15 @@ class PaxDevice: NSObject, CBPeripheralDelegate {
         }
         // funnel all Pax service reads through the decoding logic
         else if characteristic.service == self.paxService {
-            if let data = characteristic.value {
-                self.receivedPaxCharacteristic(data)
+            switch characteristic.uuid {
+                case Self.PaxReadCharacteristic:
+                    self.receivedPaxData(characteristic.value!)
+                    
+                case Self.PaxNotifyCharacteristic:
+                    self.receivedPaxNotification(characteristic.value)
+                    
+                default:
+                    Self.L.warning("Received unexpected value update for \(characteristic)")
             }
         }
         // no handler available
@@ -180,7 +220,20 @@ class PaxDevice: NSObject, CBPeripheralDelegate {
         }
     }
     
+    /**
+     * Indicates the notification state of a characteristic has changed.
+     */
+    func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
+        if let err = error {
+            Self.L.error("Failed to update notification state for \(characteristic): \(String(describing: err))")
+            return
+        }
+        
+        Self.L.trace("New notification state for \(characteristic): \(characteristic.isNotifying)")
+    }
+    
     // MARK: - Pax protocol logic
+    // MARK: Crypto
     /**
      * Derives the shared device key. This is the serial number (8 characters long) repeated twice to form a 16 byte value, which is then
      * encrypted with AES in ECB mode with a fixed key.
@@ -215,11 +268,13 @@ class PaxDevice: NSObject, CBPeripheralDelegate {
      * The last 16 bytes of the packet are always treated as the IV to use for decrypting that packet; the device shared key is used.
      */
     private func decryptPacket(_ packetData: Data) throws -> Data {
+        guard packetData.count > Self.IvLength else {
+            throw Errors.invalidPacket
+        }
+        
         // split data into IV and actual data and prepare output buffer
         let data = packetData.prefix(upTo: packetData.count - Self.IvLength)
         let iv = packetData.suffix(Self.IvLength)
-        
-        Self.L.trace("Decrypting message data '\(data.hexEncodedString())' and IV '\(iv.hexEncodedString())'")
         
         // create the cipher and decrypt
         let cipher = try AES(key: self.deviceKey.bytes, blockMode: OFB(iv: iv.bytes),
@@ -230,16 +285,111 @@ class PaxDevice: NSObject, CBPeripheralDelegate {
     }
     
     /**
-     * Interprets a received characteristic read from the Pax service.
+     * Encrypts a packet to be sent to the device. A random IV is generated and used to encrypt, and then appended to the ciphertext
+     * before being sent to the device.
+     *
+     * - parameter plainText Input packet data to encrypt
+     * - returns Encrypted packet data plus generated IV
+     * - throws If packet could not be decrypted successfully
      */
-    private func receivedPaxCharacteristic(_ data: Data) {
-        Self.L.trace("Read Pax service value: \(data.hexEncodedString())")
+    private func encryptPacket(_ plainText: Data) throws -> Data {
+        // generate random IV and encrypt
+        let iv = AES.randomIV(Self.IvLength)
+        let cipher = try AES(key: self.deviceKey.bytes, blockMode: OFB(iv: iv),
+                             padding: .noPadding)
+        let encryptedBytes = try cipher.encrypt(plainText.bytes)
+        
+        // sandwich time
+        var outPacket = Data(encryptedBytes)
+        outPacket.append(contentsOf: iv)
+        return outPacket
+    }
+    
+    // MARK: Connection Handling
+    /**
+     * Check if the device is ready to accept requests. This means we have retrieved the Pax service characteristics and computed the
+     * device shared key.
+     */
+    private func checkConnectionReady() {
+        // ensure the required state is set and the connection hasn't been set up yet
+        guard self.deviceKey != nil, self.readCharacteristic != nil,
+              self.writeCharacteristic != nil, self.notifyCharacteristic != nil,
+              !self.isConnectionSetUp else {
+            return
+        }
+        
+        // we can now try to make the connection ready
+        Self.L.trace("Setting up connection")
         
         do {
-            let decrypted = try self.decryptPacket(data)
-            Self.L.trace("Decrypted packet: \(decrypted.hexEncodedString())")
+            try self.setUpConnection()
+            
+            self.isConnectionSetUp = true
+            self.isUsable = true
         } catch {
-            Self.L.critical("Failed to decode message: \(error.localizedDescription) (message was \(data.hexEncodedString())")
+            Self.L.critical("Failed to establish Pax connection: \(error.localizedDescription)")
+        }
+    }
+    
+    /**
+     * Handles the initial configuration of the connection after we've retrieved all relevant information.
+     */
+    private func setUpConnection() throws {
+        // refresh the requested attributes
+        let packet = StatusUpdateMessage(attributes: Self.DefaultAttributes)
+        try self.writePacket(packet)
+    }
+    
+    // MARK: Attribute Writes
+    /**
+     * Serializes a message, encrypts it and sends it to the device.
+     */
+    private func writePacket(_ packet: PaxEncodableMessage) throws {
+        let packetPlain = try packet.encode()
+        let packetEncrypted = try self.encryptPacket(packetPlain)
+        
+        Self.L.trace("<<< \(packetPlain.hexEncodedString()) encrypted \(packetEncrypted.hexEncodedString())")
+        self.peripheral.writeValue(packetEncrypted, for: self.writeCharacteristic, type: .withoutResponse)
+    }
+    
+    // MARK: Attribute Reads
+    /**
+     * Handles a message received on the notification service.
+     *
+     * It appears that the value that is sent in the notification is ignored by the Pax app, and instead we just kick off a read request
+     * against the read service endpoint. The handler for data received from that characteristic will process it.
+     */
+    private func receivedPaxNotification(_ data: Data?) {
+        // Self.L.trace("Received notification: \(data?.hexEncodedString() ?? "(no data)")")
+        
+        // perform the read request
+        self.peripheral.readValue(for: self.readCharacteristic)
+    }
+    
+    /**
+     * Interprets data read from the Pax service read characteristic.
+     */
+    private func receivedPaxData(_ data: Data) {
+        // Self.L.trace("Received Pax service value: \(data.hexEncodedString())")
+
+        do {
+            // first, decrypt it
+            let decrypted = try self.decryptPacket(data)
+            Self.L.trace(">>> \(decrypted.hexEncodedString())")
+            
+            // read type and decode
+            switch decrypted[0] {
+                /// Update the supported attributes list
+                case PaxMessageType.SupportedAttributes.rawValue:
+                    let attrs = try SupportedAttributesMessage(fromPacket: decrypted)
+                    self.supportedAttributes = attrs.attributes
+                    
+                //case PaxMessageType.ChargeStatus.rawValue:
+                default:
+                    Self.L.warning("Received Pax message with unknown type \(decrypted[0])")
+            }
+        } catch {
+            Self.L.critical("Failed to decode message: \(error.localizedDescription) (message was \(data.hexEncodedString()))")
         }
     }
     
@@ -260,6 +410,8 @@ class PaxDevice: NSObject, CBPeripheralDelegate {
      * Defines the various errors that may occur during communication with the device.
      */
     enum Errors: Error {
+        /// Received packet is invalid
+        case invalidPacket
         /// Failed to decrypt a packet from the device.
         case decryptPacketFailed(_ ccError: Int32)
     }
@@ -275,9 +427,14 @@ class PaxDevice: NSObject, CBPeripheralDelegate {
     private static let PaxService = CBUUID(string: "8E320200-64D2-11E6-BDF4-0800200C9A66")
     private static let PaxReadCharacteristic = CBUUID(string: "8E320201-64D2-11E6-BDF4-0800200C9A66")
     private static let PaxWriteCharacteristic = CBUUID(string: "8E320202-64D2-11E6-BDF4-0800200C9A66")
+    private static let PaxNotifyCharacteristic = CBUUID(string: "8E320203-64D2-11E6-BDF4-0800200C9A66")
     
     // Encryption key used for deriving the device key
     private static let DeviceKeyKey = Data(base64Encoded: "98hmw494dTCGKTvVfdMlQA==")
     // Length of the IV appended to all packets, in bytes
     private static let IvLength = 16
+    
+    /// Attributes to retrieve from a device when connecting for the first time; this should be only attributes all devices support.
+    private static let DefaultAttributes: Set<PaxMessageType> = [.Battery, .LockStatus,
+                                                                 .SupportedAttributes]
 }

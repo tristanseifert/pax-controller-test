@@ -16,6 +16,7 @@
 		6A27D04C26D8B16400553C8A /* Helpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A27D04B26D8B16400553C8A /* Helpers.swift */; };
 		6A27D04F26D9458F00553C8A /* PaxDevice.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A27D04E26D9458F00553C8A /* PaxDevice.swift */; };
 		6A27D05526D957BC00553C8A /* CryptoSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 6A27D05426D957BC00553C8A /* CryptoSwift */; };
+		6A27D05726D95DFC00553C8A /* PaxMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A27D05626D95DFC00553C8A /* PaxMessage.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -30,6 +31,7 @@
 		6A27D04926D8A75D00553C8A /* DeviceViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceViewController.swift; sourceTree = "<group>"; };
 		6A27D04B26D8B16400553C8A /* Helpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Helpers.swift; sourceTree = "<group>"; };
 		6A27D04E26D9458F00553C8A /* PaxDevice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaxDevice.swift; sourceTree = "<group>"; };
+		6A27D05626D95DFC00553C8A /* PaxMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaxMessage.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -90,6 +92,7 @@
 			isa = PBXGroup;
 			children = (
 				6A27D04E26D9458F00553C8A /* PaxDevice.swift */,
+				6A27D05626D95DFC00553C8A /* PaxMessage.swift */,
 			);
 			path = "Device stuff";
 			sourceTree = "<group>";
@@ -173,6 +176,7 @@
 				6A27D03926D8963000553C8A /* DeviceBrowserViewController.swift in Sources */,
 				6A27D03726D8963000553C8A /* AppDelegate.swift in Sources */,
 				6A27D04F26D9458F00553C8A /* PaxDevice.swift in Sources */,
+				6A27D05726D95DFC00553C8A /* PaxMessage.swift in Sources */,
 				6A27D04A26D8A75D00553C8A /* DeviceViewController.swift in Sources */,
 				6A27D04C26D8B16400553C8A /* Helpers.swift in Sources */,
 			);
