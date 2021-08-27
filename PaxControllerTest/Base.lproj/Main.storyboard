@@ -143,12 +143,12 @@
                                     <color key="backgroundColor" name="textBackgroundColor" catalog="System" colorSpace="catalog"/>
                                 </textFieldCell>
                                 <connections>
-                                    <binding destination="vPX-wZ-ccK" name="displayPatternValue1" keyPath="self.deviceManufacturer" id="bgP-dV-K18">
+                                    <binding destination="vPX-wZ-ccK" name="displayPatternValue1" keyPath="self.device.manufacturer" id="XhP-fa-iJH">
                                         <dictionary key="options">
                                             <string key="NSDisplayPattern">%{value1}@ %{value2}@</string>
                                         </dictionary>
                                     </binding>
-                                    <binding destination="vPX-wZ-ccK" name="displayPatternValue2" keyPath="self.deviceModel" previousBinding="bgP-dV-K18" id="OUa-yP-hxh">
+                                    <binding destination="vPX-wZ-ccK" name="displayPatternValue2" keyPath="self.device.model" previousBinding="XhP-fa-iJH" id="X8U-AT-9Hu">
                                         <dictionary key="options">
                                             <string key="NSDisplayPattern">%{value1}@ %{value2}@</string>
                                             <string key="NSNullPlaceholder">Unknown</string>
@@ -164,13 +164,13 @@
                                     <color key="backgroundColor" name="textBackgroundColor" catalog="System" colorSpace="catalog"/>
                                 </textFieldCell>
                                 <connections>
-                                    <binding destination="vPX-wZ-ccK" name="displayPatternValue1" keyPath="self.deviceHwRev" id="plj-JO-KFq">
+                                    <binding destination="vPX-wZ-ccK" name="displayPatternValue1" keyPath="self.device.hwVersion" id="TBy-IJ-tCA">
                                         <dictionary key="options">
                                             <string key="NSDisplayPattern">Hardware: %{value1}@, Firmware: %{value2}@</string>
                                             <string key="NSNullPlaceholder">Unknown</string>
                                         </dictionary>
                                     </binding>
-                                    <binding destination="vPX-wZ-ccK" name="displayPatternValue2" keyPath="self.deviceSwRev" previousBinding="plj-JO-KFq" id="uvN-C4-czW">
+                                    <binding destination="vPX-wZ-ccK" name="displayPatternValue2" keyPath="self.device.swVersion" previousBinding="TBy-IJ-tCA" id="Oav-Eu-6Fo">
                                         <dictionary key="options">
                                             <string key="NSDisplayPattern">Hardware: %{value1}@, Firmware: %{value2}@</string>
                                             <string key="NSNullPlaceholder">Unknown</string>
@@ -202,7 +202,7 @@
                                     <color key="backgroundColor" name="textBackgroundColor" catalog="System" colorSpace="catalog"/>
                                 </textFieldCell>
                                 <connections>
-                                    <binding destination="vPX-wZ-ccK" name="value" keyPath="self.deviceSerial" id="JUO-XK-6BT">
+                                    <binding destination="vPX-wZ-ccK" name="value" keyPath="self.device.serial" id="9Oo-Em-rPk">
                                         <dictionary key="options">
                                             <bool key="NSAllowsEditingMultipleValuesSelection" value="NO"/>
                                             <string key="NSNullPlaceholder">Unknown</string>
