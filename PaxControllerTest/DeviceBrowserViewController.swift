@@ -14,6 +14,8 @@ class DeviceBrowserViewController: NSViewController, CBCentralManagerDelegate {
     
     /// set when we're actively scanning for devices
     @objc dynamic var isScanning: Bool = false
+    /// set when we're connecting to a device
+    @objc dynamic var isConnecting: Bool = false
     /// devices we've found during scanning
     @objc dynamic var devices: [[String: Any]] = []
 
@@ -24,6 +26,8 @@ class DeviceBrowserViewController: NSViewController, CBCentralManagerDelegate {
     
     // peripheral we're pending to connect to
     private var connectTo: CBPeripheral? = nil
+    // determine the type of device we are connecting to
+    private lazy var probulator = PaxDeviceProber()
     
     /**
      * Sets up the central that we use later to browse for services
@@ -111,17 +115,49 @@ class DeviceBrowserViewController: NSViewController, CBCentralManagerDelegate {
      * Successfully connected to a peripheral
      */
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        Self.L.debug("Connected to peripheral \(peripheral)")
+        Self.L.debug("Connected to peripheral \(peripheral); probing...")
         
-        // open a special window controller for this
         DispatchQueue.main.async {
-            let sb = self.storyboard
-            let vc = sb!.instantiateController(withIdentifier: "deviceController") as! DeviceViewController
-            vc.peripheral = peripheral
-            vc.central = central
-            
-            self.presentAsSheet(vc)
+            self.isConnecting = true
         }
+        
+        // and probe it
+        self.probulator.probe(peripheral) { res in
+            switch res {
+                case .success(let device):
+                    switch device.type {
+                        case .Pax3:
+                            DispatchQueue.main.async {
+                                let sb = self.storyboard
+                                let vc = sb!.instantiateController(withIdentifier: "pax3DeviceController") as! DeviceViewController
+                                
+                                vc.central = central
+                                vc.peripheral = peripheral
+                                vc.device = device
+                                
+                                self.presentAsSheet(vc)
+                            }
+                            
+                        default:
+                            Self.L.error("No device VC for type \(String(describing: device.type))")
+                    }
+                    
+                case .failure(let err):
+                    Self.L.error("Failed to probe device: \(err.localizedDescription)")
+                    DispatchQueue.main.async {
+                        NSApp.presentError(err)
+                    }
+            }
+            
+            DispatchQueue.main.async {
+                self.isConnecting = false
+            }
+        }
+    }
+    
+    func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        // TODO: try to reconnect
+        Self.L.warning("Disconnected PaxDevice \(peripheral)")
     }
     
     /**

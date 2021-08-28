@@ -16,7 +16,7 @@ import CryptoSwift
  * Base class for Pax devices
  */
 class PaxDevice: NSObject, CBPeripheralDelegate {
-    static let L = Logger(subsystem: "me.tseifert.paxcontrollertest", category: "PaxDevice")
+    private static let L = Logger(subsystem: "me.tseifert.paxcontrollertest", category: "PaxDevice")
     
     /// Peripheral representing the remote end of the BT LE connection
     private var peripheral: CBPeripheral!
@@ -38,7 +38,7 @@ class PaxDevice: NSObject, CBPeripheralDelegate {
     private var isConnectionSetUp: Bool = false
     
     /// Device model
-    private(set) public var type: DeviceType = .Unknown
+    internal(set) public var type: DeviceType = .Unknown
     
     /// Serial number of the device, as read during connection establishment
     @Published @objc private(set) public dynamic var serial: String!
@@ -53,6 +53,13 @@ class PaxDevice: NSObject, CBPeripheralDelegate {
     
     /// Supported message types/attributes
     @Published private(set) public var supportedAttributes = Set<PaxMessageType>()
+    
+    /// Is the device currently locked?
+    @Published private(set) public var isLocked: Bool = false
+    /// Current battery charge level, 0 - 100
+    @Published private(set) public var batteryLevel: UInt = 0
+    /// Current charge state
+    @Published private(set) public var chargeState: ChargeState = .unknown
     
     // MARK: - Initialization
     /**
@@ -336,6 +343,14 @@ class PaxDevice: NSObject, CBPeripheralDelegate {
      */
     private func setUpConnection() throws {
         // refresh the requested attributes
+        try self.readDefaultAttributes()
+    }
+    
+    /**
+     * Reads the default attributes from the device. This can be overridden by custom device classes, but should ensure that the
+     * super implementation is invoked first.
+     */
+    internal func readDefaultAttributes() throws {
         let packet = StatusUpdateMessage(attributes: Self.DefaultAttributes)
         try self.writePacket(packet)
     }
@@ -344,7 +359,7 @@ class PaxDevice: NSObject, CBPeripheralDelegate {
     /**
      * Serializes a message, encrypts it and sends it to the device.
      */
-    private func writePacket(_ packet: PaxEncodableMessage) throws {
+    internal func writePacket(_ packet: PaxEncodableMessage) throws {
         let packetPlain = try packet.encode()
         let packetEncrypted = try self.encryptPacket(packetPlain)
         
@@ -373,24 +388,71 @@ class PaxDevice: NSObject, CBPeripheralDelegate {
         // Self.L.trace("Received Pax service value: \(data.hexEncodedString())")
 
         do {
-            // first, decrypt it
             let decrypted = try self.decryptPacket(data)
             Self.L.trace(">>> \(decrypted.hexEncodedString())")
             
-            // read type and decode
-            switch decrypted[0] {
-                /// Update the supported attributes list
-                case PaxMessageType.SupportedAttributes.rawValue:
-                    let attrs = try SupportedAttributesMessage(fromPacket: decrypted)
-                    self.supportedAttributes = attrs.attributes
-                    
-                //case PaxMessageType.ChargeStatus.rawValue:
-                default:
-                    Self.L.warning("Received Pax message with unknown type \(decrypted[0])")
-            }
+            try self.processPacket(decrypted)
         } catch {
             Self.L.critical("Failed to decode message: \(error.localizedDescription) (message was \(data.hexEncodedString()))")
         }
+    }
+    
+    /**
+     * Processes a decrypted packet.
+     */
+    internal func processPacket(_ packet: Data) throws {
+        switch packet[0] {
+            case PaxMessageType.LockStatus.rawValue:
+                let message = try LockStateMessage(fromPacket: packet)
+                self.isLocked = message.isLocked
+            case PaxMessageType.Battery.rawValue:
+                let message = try BatteryMessage(fromPacket: packet)
+                self.batteryLevel = message.chargeLevel
+            case PaxMessageType.ChargeStatus.rawValue:
+                let message = try ChargeStatusMessage(fromPacket: packet)
+                if !message.isCharging {
+                    self.chargeState = .notCharging
+                } else if message.isCharging && !message.isChargeComplete {
+                    self.chargeState = .charging
+                } else if message.isCharging && message.isChargeComplete {
+                    self.chargeState = .chargingCompleted
+                } else {
+                    self.chargeState = .unknown
+                }
+                
+            /// Update the supported attributes list
+            case PaxMessageType.SupportedAttributes.rawValue:
+                let message = try SupportedAttributesMessage(fromPacket: packet)
+                self.supportedAttributes = message.attributes
+
+            default:
+                Self.L.warning("Received Pax message with unknown type \(packet[0])")
+        }
+    }
+    
+    // MARK: - Accessors
+    /**
+     * Forces the given property to be re-read from the device.
+     */
+    public func reloadAttributes(_ attributes: Set<PaxMessageType>) throws {
+        // ensure it includes only supported attributes
+        guard attributes.union(self.supportedAttributes).count != attributes.count else {
+            let unsupported = attributes.subtracting(self.supportedAttributes)
+            Self.L.warning("Attempted to read unsupported attributes \(unsupported) from \(self)")
+            throw Errors.unsupportedAttributes(unsupported)
+        }
+        
+        // then send a status update for them
+        let packet = StatusUpdateMessage(attributes: attributes)
+        try self.writePacket(packet)
+    }
+    
+    /**
+     * Updates the lock state.
+     */
+    public func setLocked(_ locked: Bool) throws {
+        let lock = LockStateMessage(locked: locked)
+        try self.writePacket(lock)
     }
     
     // MARK: - Types and constants
@@ -406,6 +468,18 @@ class PaxDevice: NSObject, CBPeripheralDelegate {
         case Pax3
     }
     
+    /// Charge status of the device
+    enum ChargeState {
+        /// We do not know whether the device is charging or not
+        case unknown
+        /// Device is not charging
+        case notCharging
+        /// Battery is charging
+        case charging
+        /// Battery is fully charged
+        case chargingCompleted
+    }
+    
     /**
      * Defines the various errors that may occur during communication with the device.
      */
@@ -414,6 +488,8 @@ class PaxDevice: NSObject, CBPeripheralDelegate {
         case invalidPacket
         /// Failed to decrypt a packet from the device.
         case decryptPacketFailed(_ ccError: Int32)
+        /// Attempted to read an attribute this device does not support
+        case unsupportedAttributes(_ attributes: Set<PaxMessageType>)
     }
     
     private static let DeviceInfoService = CBUUID(string: "180A")
@@ -435,6 +511,6 @@ class PaxDevice: NSObject, CBPeripheralDelegate {
     private static let IvLength = 16
     
     /// Attributes to retrieve from a device when connecting for the first time; this should be only attributes all devices support.
-    private static let DefaultAttributes: Set<PaxMessageType> = [.Battery, .LockStatus,
-                                                                 .SupportedAttributes]
+    private static let DefaultAttributes: Set<PaxMessageType> = [.Battery, .ChargeStatus,
+                                                                 .LockStatus, .SupportedAttributes]
 }
