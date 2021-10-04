@@ -75,6 +75,12 @@ enum PaxMessageType: UInt8, CaseIterable {
      */
     case PodInserted = 8
     case Time = 9
+    /**
+     * User visible name of the device. This is encoded as one byte indicating the string length, followed by the raw bytes of the
+     * string. The app treats this as UTF-8 encoded.
+     *
+     * Devices: All
+     */
     case DisplayName = 10
     case HeaterRanges = 17
     /**

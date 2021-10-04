@@ -275,6 +275,12 @@ class PaxDevice: NSObject, CBPeripheralDelegate {
      * The last 16 bytes of the packet are always treated as the IV to use for decrypting that packet; the device shared key is used.
      */
     private func decryptPacket(_ packetData: Data) throws -> Data {
+        // ignore packet if we haven't an encryption key yet
+        guard self.deviceKey != nil else {
+            Self.L.warning("No device key for packet: \(packetData)")
+            throw Errors.invalidPacket
+        }
+        
         guard packetData.count > Self.IvLength else {
             throw Errors.invalidPacket
         }
